@@ -1,0 +1,13 @@
+[package]
+name = "pixelbot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+argh = "0.1.19"
+color-eyre = "0.6.5"
+fjall = "2.11.2"
+poise = "0.6.1"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.50.0", features = ["full"] }
+toml = "1.1.0"
