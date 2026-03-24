@@ -2,10 +2,10 @@ mod commands;
 mod config;
 mod db;
 mod game;
-
+mod tournament;
 use argh::FromArgs;
 use color_eyre::eyre::WrapErr;
-use poise::serenity_prelude as serenity;
+use poise::serenity_prelude::{self as serenity, FullEvent};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -15,7 +15,6 @@ struct Args {
     /// path to the config file (default: config.toml)
     #[argh(option, short = 'c', default = "PathBuf::from(\"config.toml\")")]
     config: PathBuf,
-
     /// override the db_path from the config file
     #[argh(option)]
     db_path: Option<String>,
@@ -25,6 +24,7 @@ pub struct BotData {
     pub db: Arc<db::Db>,
     pub member_role_id: u64,
     pub elder_role_id: u64,
+    pub polling_channel_id: u64,
 }
 
 pub type Error = color_eyre::eyre::Report;
@@ -33,21 +33,20 @@ pub type Context<'a> = poise::Context<'a, BotData, Error>;
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-
     let args: Args = argh::from_env();
     let cfg = config::Config::load(&args.config)?;
     let db_path = args
         .db_path
         .as_deref()
         .or(cfg.db_path.as_deref())
-        .unwrap_or("./pixelbot.db");
-
+        .unwrap_or("./pixelbot_db");
+    let db = Arc::new(db::Db::open(db_path)?);
     let data = BotData {
-        db: Arc::new(db::Db::open(db_path)?),
+        db: db.clone(),
         member_role_id: cfg.member_role_id,
         elder_role_id: cfg.elder_role_id,
+        polling_channel_id: cfg.polling_channel_id,
     };
-
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: vec![
@@ -57,7 +56,47 @@ async fn main() -> color_eyre::Result<()> {
                 commands::ign::whois(),
                 commands::ign::eldersetign(),
                 commands::ign::elderremoveign(),
+                commands::tournament::tournament_start(),
+                commands::tournament::tournament_status(),
+                commands::tournament::tournament_cancel(),
+                commands::tournament::tournament_tick(),
             ],
+            event_handler: |_ctx, event, _framework, data| {
+                Box::pin(async move {
+                    if let FullEvent::Message { new_message: msg } = event {
+                        if msg.author.bot {
+                            return Ok(());
+                        }
+                        let result: Result<(), Error> = (|| {
+                            let tournament = match tournament::Tournament::load(&data.db)? {
+                                Some(t) => t,
+                                None => return Ok(()),
+                            };
+                            if tournament.state != tournament::TournamentState::Submissions {
+                                return Ok(());
+                            }
+                            if msg.channel_id.get() != tournament.thread_id {
+                                return Ok(());
+                            }
+                            let content = msg.content.trim().to_string();
+                            if content.is_empty() {
+                                return Ok(());
+                            }
+                            let partition =
+                                data.db.tournament_submissions_partition(tournament.id)?;
+                            let key = msg.author.id.get().to_string();
+                            partition
+                                .insert(key.as_bytes(), content.as_bytes())
+                                .wrap_err("Failed to save submission")?;
+                            Ok(())
+                        })();
+                        if let Err(e) = result {
+                            eprintln!("Error handling submission message: {e:?}");
+                        }
+                    }
+                    Ok(())
+                })
+            },
             ..Default::default()
         })
         .setup(move |ctx, _ready, framework| {
@@ -78,12 +117,19 @@ async fn main() -> color_eyre::Result<()> {
                             .wrap_err("Failed to register commands globally")?;
                     }
                 }
+                tournament::runner::spawn(
+                    ctx.http.clone(),
+                    data.db.clone(),
+                    data.polling_channel_id,
+                );
                 Ok(data)
             })
         })
         .build();
 
-    let intents = serenity::GatewayIntents::non_privileged();
+    let intents = serenity::GatewayIntents::non_privileged()
+        | serenity::GatewayIntents::MESSAGE_CONTENT
+        | serenity::GatewayIntents::GUILD_MEMBERS;
 
     serenity::ClientBuilder::new(&cfg.token, intents)
         .framework(framework)

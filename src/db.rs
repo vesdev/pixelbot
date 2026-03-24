@@ -19,4 +19,17 @@ impl Db {
             .open_partition(game.partition_key(), Default::default())
             .wrap_err_with(|| format!("Failed to open IGN partition for: {}", game.display()))
     }
+
+    pub fn tournament_partition(&self) -> Result<PartitionHandle> {
+        self.keyspace
+            .open_partition("tournament", Default::default())
+            .wrap_err("Failed to open tournament partition")
+    }
+
+    pub fn tournament_submissions_partition(&self, tournament_id: u64) -> Result<PartitionHandle> {
+        let key = format!("submissions_{tournament_id}");
+        self.keyspace
+            .open_partition(&key, Default::default())
+            .wrap_err("Failed to open submissions partition")
+    }
 }

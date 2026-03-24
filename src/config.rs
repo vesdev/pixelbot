@@ -9,6 +9,7 @@ pub struct Config {
     pub member_role_id: u64,
     pub elder_role_id: u64,
     pub db_path: Option<String>,
+    pub polling_channel_id: u64,
 }
 
 impl Config {
